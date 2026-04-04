@@ -1,0 +1,181 @@
+version: "3.9"
+
+# MedAxis Platform — Full stack docker-compose
+# Run: docker-compose up --build
+# Gateway available at: http://localhost:8000
+
+x-common-env: &common-env
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_USER: medaxis
+  DB_PASSWORD: medaxis123
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  JWT_SECRET: "medaxis-change-this-in-production"
+  LOW_STOCK_THRESHOLD: "20"
+  # OPENAI_API_KEY: "sk-..."  # Uncomment and set for real NLP queries
+
+services:
+
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: medaxis
+      POSTGRES_PASSWORD: medaxis123
+      POSTGRES_DB: medaxis_auth
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medaxis"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Microservices ────────────────────────────────────────────────────────────
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: services/auth-service/Dockerfile
+    environment:
+      <<: *common-env
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+  inventory-service:
+    build:
+      context: .
+      dockerfile: services/inventory-service/Dockerfile
+    environment:
+      <<: *common-env
+    ports:
+      - "8002:8002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure
+
+  billing-service:
+    build:
+      context: .
+      dockerfile: services/billing-service/Dockerfile
+    environment:
+      <<: *common-env
+      INVENTORY_SERVICE_URL: http://inventory-service:8002
+    ports:
+      - "8003:8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      inventory-service:
+        condition: service_started
+    restart: on-failure
+
+  replenishment-service:
+    build:
+      context: .
+      dockerfile: services/replenishment-service/Dockerfile
+    environment:
+      <<: *common-env
+    ports:
+      - "8004:8004"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure
+
+  reporting-service:
+    build:
+      context: .
+      dockerfile: services/reporting-service/Dockerfile
+    environment:
+      <<: *common-env
+    ports:
+      - "8005:8005"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+  ai-insights-service:
+    build:
+      context: .
+      dockerfile: services/ai-insights-service/Dockerfile
+    environment:
+      <<: *common-env
+      # OPENAI_API_KEY: ""
+    ports:
+      - "8006:8006"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: services/notification-service/Dockerfile
+    environment:
+      <<: *common-env
+    ports:
+      - "8007:8007"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure
+
+  # ── API Gateway ──────────────────────────────────────────────────────────────
+
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:8001
+      INVENTORY_SERVICE_URL: http://inventory-service:8002
+      BILLING_SERVICE_URL: http://billing-service:8003
+      REPLENISHMENT_SERVICE_URL: http://replenishment-service:8004
+      REPORTING_SERVICE_URL: http://reporting-service:8005
+      AI_SERVICE_URL: http://ai-insights-service:8006
+      NOTIFICATION_SERVICE_URL: http://notification-service:8007
+    ports:
+      - "8000:8000"
+    depends_on:
+      - auth-service
+      - inventory-service
+      - billing-service
+      - replenishment-service
+      - reporting-service
+      - ai-insights-service
+      - notification-service
+    restart: on-failure
+
+volumes:
+  postgres_data:
