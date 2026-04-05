@@ -10,6 +10,5 @@ venv/
 *.log
 .DS_Store
 postgres_data/
-data/*.db
-data/*.log
+data/
 frontend/node_modules/
