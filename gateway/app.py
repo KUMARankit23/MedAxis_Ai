@@ -18,11 +18,13 @@ from collections import defaultdict
 
 import requests
 from flask import Flask, request, jsonify, Response
+from flask_cors import CORS
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+CORS(app, origins=["http://localhost:3000"], supports_credentials=True)
 
 # ─── Service Registry ─────────────────────────────────────────────────────────
 # Maps URL prefix → internal service URL

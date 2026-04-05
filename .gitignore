@@ -12,3 +12,4 @@ venv/
 postgres_data/
 data/*.db
 data/*.log
+frontend/node_modules/
