@@ -36,7 +36,7 @@ def _iqr_bounds(values: List[float]):
 
 def detect_sales_anomalies(
     medicine_id: str,
-    store_id: str,
+    outlet_id: str,
     medicine_name: str,
     sales_history: List[Dict],  # [{"date": "...", "quantity": N}]
 ) -> List[Dict]:
@@ -68,7 +68,7 @@ def detect_sales_anomalies(
                 anomalies.append({
                     "anomaly_type": "SALES_SPIKE" if qty > avg else "SALES_DROP",
                     "medicine_id": medicine_id,
-                    "store_id": store_id,
+                    "outlet_id": outlet_id,
                     "severity": severity,
                     "description": (
                         f"Anomalous sales detected for {medicine_name} on {sales_history[i]['date']}. "
@@ -93,7 +93,7 @@ def detect_sales_anomalies(
                 anomalies.append({
                     "anomaly_type": "SALES_SPIKE" if qty > upper else "SALES_DROP",
                     "medicine_id": medicine_id,
-                    "store_id": store_id,
+                    "outlet_id": outlet_id,
                     "severity": severity,
                     "description": (
                         f"Anomalous sales for {medicine_name} on {sales_history[i]['date']}. "
@@ -111,7 +111,7 @@ def detect_sales_anomalies(
 
 def detect_stock_mismatch(
     medicine_id: str,
-    store_id: str,
+    outlet_id: str,
     medicine_name: str,
     system_stock: int,
     physical_count: int,
@@ -136,10 +136,10 @@ def detect_stock_mismatch(
     return {
         "anomaly_type": "STOCK_MISMATCH",
         "medicine_id": medicine_id,
-        "store_id": store_id,
+        "outlet_id": outlet_id,
         "severity": severity,
         "description": (
-            f"Stock mismatch for {medicine_name} at store {store_id}. "
+            f"Stock mismatch for {medicine_name} at outlet {outlet_id}. "
             f"System shows {system_stock} units, physical count is {physical_count}. "
             f"Discrepancy: {diff} units ({round(diff_pct * 100, 1)}%). "
             f"Possible causes: unrecorded sales, theft, or data entry error."

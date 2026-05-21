@@ -6,6 +6,23 @@ from sqlalchemy import select, func
 from app.models import Medicine, InventoryBatch, StockLedger, MedicineCategory
 from app.schemas import MedicineCreate, BatchCreate
 
+# ── Prometheus custom counters ────────────────────────────────────────────────
+try:
+    from prometheus_client import Counter, REGISTRY
+
+    def _counter(name, doc):
+        try:
+            return Counter(name, doc)
+        except ValueError:
+            return REGISTRY._names_to_collectors.get(name + "_total") or Counter.__new__(Counter)
+
+    STOCK_DEDUCTIONS = _counter("medaxis_stock_deductions", "Total successful stock deductions")
+    STOCK_RECEIPTS   = _counter("medaxis_stock_receipts",   "Total stock batch receipts")
+except ImportError:
+    class _Noop:
+        def inc(self, *a, **kw): pass
+    STOCK_DEDUCTIONS = STOCK_RECEIPTS = _Noop()
+
 
 async def get_total_stock(db: AsyncSession, medicine_id, outlet_id: str) -> int:
     today = date.today()
@@ -55,11 +72,13 @@ async def receive_batch(db: AsyncSession, data: BatchCreate, user_id: str) -> In
     db.add(batch)
     await db.flush()
 
-    total_after = await get_total_stock(db, data.medicine_id, data.outlet_id) + data.quantity
+    # get_total_stock already includes the flushed batch, so no need to add data.quantity again
+    total_after = await get_total_stock(db, data.medicine_id, data.outlet_id)
     await _record_ledger(db, data.medicine_id, batch.id, data.outlet_id,
                           "RECEIVE", data.quantity, total_after, user_id=user_id)
     await db.commit()
     await db.refresh(batch)
+    STOCK_RECEIPTS.inc()
     return batch, total_after
 
 
@@ -97,6 +116,7 @@ async def deduct_stock(db: AsyncSession, medicine_id, outlet_id: str,
 
     await db.commit()
     new_total = await get_total_stock(db, medicine_id, outlet_id)
+    STOCK_DEDUCTIONS.inc()
     return new_total
 
 

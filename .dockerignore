@@ -1,0 +1,13 @@
+.git
+.gitignore
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.env
+**/node_modules
+frontend/build
+nginx/certs
+*.md
+.kiro
+k8s

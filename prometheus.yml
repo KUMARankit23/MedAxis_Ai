@@ -1,0 +1,46 @@
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  external_labels:
+    platform: medaxis
+
+scrape_configs:
+  - job_name: api-gateway
+    static_configs:
+      - targets: ["api-gateway:8000"]
+    metrics_path: /metrics
+
+  - job_name: auth-service
+    static_configs:
+      - targets: ["auth-service:8001"]
+    metrics_path: /metrics
+
+  - job_name: inventory-service
+    static_configs:
+      - targets: ["inventory-service:8002"]
+    metrics_path: /metrics
+
+  - job_name: billing-service
+    static_configs:
+      - targets: ["billing-service:8003"]
+    metrics_path: /metrics
+
+  - job_name: replenishment-service
+    static_configs:
+      - targets: ["replenishment-service:8004"]
+    metrics_path: /metrics
+
+  - job_name: reporting-service
+    static_configs:
+      - targets: ["reporting-service:8005"]
+    metrics_path: /metrics
+
+  - job_name: ai-insights-service
+    static_configs:
+      - targets: ["ai-insights-service:8006"]
+    metrics_path: /metrics
+
+  - job_name: notification-service
+    static_configs:
+      - targets: ["notification-service:8007"]
+    metrics_path: /metrics

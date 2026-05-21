@@ -1,0 +1,36 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+exclude = [
+    ".git",
+    "__pycache__",
+    "*.egg-info",
+    ".venv",
+    "venv",
+    "alembic/versions",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # do not perform function calls in default arguments (FastAPI Depends)
+    "B904",  # raise from (too strict for existing code)
+    "UP007", # use X | Y for union types (Python 3.10+ only)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "shared"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests", "services"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]

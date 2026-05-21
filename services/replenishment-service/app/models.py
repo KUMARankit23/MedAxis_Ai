@@ -10,6 +10,7 @@ class OrderStatus(str, enum.Enum):
 class ReplenishmentOrder(Base):
     __tablename__ = "replenishment_orders"
     id                = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    po_number         = Column(String(50), nullable=True, index=True)
     medicine_id       = Column(String(200), nullable=False)
     medicine_name     = Column(String(200))
     outlet_id         = Column(String(50), nullable=False)
@@ -24,4 +25,13 @@ class ReplenishmentOrder(Base):
     created_by        = Column(String(200))
     approved_by       = Column(String(200))
     notes             = Column(Text)
+    cancelled_at      = Column(DateTime(timezone=True), nullable=True)
+    cancel_reason     = Column(Text, nullable=True)
     created_at        = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class POCounter(Base):
+    """Sequence counter for PO number generation."""
+    __tablename__ = "po_counters"
+    date_key = Column(String(8), primary_key=True)   # YYYYMMDD
+    last_seq = Column(Integer, default=0, nullable=False)

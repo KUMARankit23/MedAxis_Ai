@@ -1,14 +1,54 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
-.env
+*.pyd
 *.egg-info/
 dist/
 build/
 .venv/
 venv/
-*.log
+env/
+
+# Environment & secrets
+.env
+*.env.local
+nginx/certs/*.pem
+nginx/certs/*.crt
+nginx/certs/*.key
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+*.db
+test.db
+test_billing.db
+test_inventory.db
+test_*.db
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Docker volumes
 postgres_data/
 data/
+backup_data/
+
+# Frontend
 frontend/node_modules/
+frontend/build/
+frontend/.env.local
+
+# Logs
+*.log
+logs/
+
+# IDE / tooling
+.kiro/
+.claude/
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -36,7 +36,7 @@ def _build_features(dates: List[date]) -> np.ndarray:
 
 def forecast_demand(
     medicine_id: str,
-    store_id: str,
+    outlet_id: str,
     medicine_name: str,
     sales_history: List[Dict],  # [{"date": "2024-01-01", "quantity": 15}, ...]
     forecast_days: int = 7,
@@ -63,7 +63,7 @@ def forecast_demand(
             })
         return {
             "medicine_id": medicine_id,
-            "store_id": store_id,
+            "outlet_id": outlet_id,
             "medicine_name": medicine_name,
             "forecasts": forecasts,
             "total_predicted": round(avg * forecast_days, 1),
@@ -129,7 +129,7 @@ def forecast_demand(
 
         return {
             "medicine_id": medicine_id,
-            "store_id": store_id,
+            "outlet_id": outlet_id,
             "medicine_name": medicine_name,
             "forecasts": forecasts,
             "total_predicted": total_predicted,
@@ -150,7 +150,7 @@ def forecast_demand(
         ]
         return {
             "medicine_id": medicine_id,
-            "store_id": store_id,
+            "outlet_id": outlet_id,
             "medicine_name": medicine_name,
             "forecasts": forecasts,
             "total_predicted": round(avg * forecast_days, 1),

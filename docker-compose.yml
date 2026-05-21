@@ -1,18 +1,31 @@
-version: "3.9"
-
-# MedAxis Platform — Full stack
+# MedAxis Platform — Full stack (development)
 # Usage: docker compose up -d --build
-# Gateway: http://localhost:8000
-# Swagger: http://localhost:800{1-6}/docs
+# Gateway:  http://localhost:8000
+# Frontend: http://localhost:3000
+# Swagger:  http://localhost:800{1-7}/docs
 
 x-common-env: &common-env
-  DB_HOST:     postgres
-  DB_PORT:     "5432"
-  DB_USER:     postgres
-  DB_PASSWORD: "${DB_PASSWORD:-postgres}"
-  REDIS_HOST:  redis
-  REDIS_PORT:  "6379"
-  JWT_SECRET:  "${JWT_SECRET:-medaxis-change-in-production}"
+  DB_HOST:         postgres
+  DB_PORT:         "5432"
+  DB_USER:         postgres
+  DB_PASSWORD:     "${DB_PASSWORD:-postgres}"
+  REDIS_HOST:      redis
+  REDIS_PORT:      "6379"
+  REDIS_URL:       "redis://redis:6379"
+  JWT_SECRET:      "${JWT_SECRET:-medaxis-dev-secret-change-in-production-min32chars}"
+  LOG_LEVEL:       "${LOG_LEVEL:-INFO}"
+  ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:3000}"
+  SENTRY_DSN:      "${SENTRY_DSN:-}"
+  ENVIRONMENT:     "${ENVIRONMENT:-development}"
+
+x-build-defaults: &build-defaults
+  context: .
+  args:
+    BUILDKIT_INLINE_CACHE: "1"
+
+networks:
+  medaxis-net:
+    driver: bridge
 
 services:
 
@@ -28,99 +41,180 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./init-db/01_create_databases.sql:/docker-entrypoint-initdb.d/01_create_databases.sql
     ports: ["5432:5432"]
+    networks: [medaxis-net]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s; timeout: 5s; retries: 10
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
     ports: ["6379:6379"]
+    networks: [medaxis-net]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 5s; timeout: 3s; retries: 5
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
 
   # ── Microservices ────────────────────────────────────────────────────────────
 
   auth-service:
-    build: {context: services/auth-service, dockerfile: Dockerfile}
+    build:
+      <<: *build-defaults
+      dockerfile: services/auth-service/Dockerfile
     environment:
       <<: *common-env
       DATABASE_URL: "postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/medaxis_auth"
     ports: ["8001:8001"]
+    networks: [medaxis-net]
     depends_on:
       postgres: {condition: service_healthy}
-    restart: on-failure
+      redis:    {condition: service_healthy}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   inventory-service:
-    build: {context: services/inventory-service, dockerfile: Dockerfile}
+    build:
+      <<: *build-defaults
+      dockerfile: services/inventory-service/Dockerfile
     environment:
       <<: *common-env
       DATABASE_URL: "postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/medaxis_inventory"
     ports: ["8002:8002"]
+    networks: [medaxis-net]
     depends_on:
       postgres: {condition: service_healthy}
       redis:    {condition: service_healthy}
-    restart: on-failure
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   billing-service:
-    build: {context: services/billing-service, dockerfile: Dockerfile}
+    build:
+      <<: *build-defaults
+      dockerfile: services/billing-service/Dockerfile
     environment:
       <<: *common-env
       DATABASE_URL:          "postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/medaxis_billing"
       INVENTORY_SERVICE_URL: "http://inventory-service:8002"
     ports: ["8003:8003"]
+    networks: [medaxis-net]
     depends_on:
       postgres:          {condition: service_healthy}
-      inventory-service: {condition: service_started}
-    restart: on-failure
+      inventory-service: {condition: service_healthy}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8003/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   replenishment-service:
-    build: {context: services/replenishment-service, dockerfile: Dockerfile}
+    build:
+      <<: *build-defaults
+      dockerfile: services/replenishment-service/Dockerfile
     environment:
       <<: *common-env
-      DATABASE_URL: "postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/medaxis_replenishment"
+      DATABASE_URL:          "postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/medaxis_replenishment"
+      INVENTORY_SERVICE_URL: "http://inventory-service:8002"
     ports: ["8004:8004"]
+    networks: [medaxis-net]
     depends_on:
       postgres: {condition: service_healthy}
-    restart: on-failure
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8004/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   reporting-service:
-    build: {context: services/reporting-service, dockerfile: Dockerfile}
+    build:
+      <<: *build-defaults
+      dockerfile: services/reporting-service/Dockerfile
     environment:
       <<: *common-env
       BILLING_DB_URL:   "postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/medaxis_billing"
       INVENTORY_DB_URL: "postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/medaxis_inventory"
+      REDIS_URL:        "redis://redis:6379"
     ports: ["8005:8005"]
+    networks: [medaxis-net]
     depends_on:
       postgres: {condition: service_healthy}
-    restart: on-failure
+      redis:    {condition: service_healthy}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8005/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   ai-insights-service:
-    build: {context: services/ai-insights-service, dockerfile: Dockerfile}
+    build:
+      <<: *build-defaults
+      dockerfile: services/ai-insights-service/Dockerfile
     environment:
       <<: *common-env
-      DATABASE_URL:  "postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/medaxis_ai"
-      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
-      GROQ_API_KEY:   "${GROQ_API_KEY:-}"
+      DATABASE_URL:             "postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/medaxis_ai"
+      OPENAI_API_KEY:           "${OPENAI_API_KEY:-}"
+      GROQ_API_KEY:             "${GROQ_API_KEY:-}"
+      NOTIFICATION_SERVICE_URL: "http://notification-service:8007"
     ports: ["8006:8006"]
+    networks: [medaxis-net]
     depends_on:
-      postgres: {condition: service_healthy}
-    restart: on-failure
+      postgres:             {condition: service_healthy}
+      notification-service: {condition: service_healthy}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8006/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   notification-service:
-    build: {context: services/notification-service, dockerfile: Dockerfile}
+    build:
+      <<: *build-defaults
+      dockerfile: services/notification-service/Dockerfile
     environment:
       <<: *common-env
       DATABASE_URL: "postgresql://postgres:${DB_PASSWORD:-postgres}@postgres:5432/medaxis_notifications"
     ports: ["8007:8007"]
+    networks: [medaxis-net]
     depends_on:
       postgres: {condition: service_healthy}
-    restart: on-failure
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8007/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   # ── API Gateway ──────────────────────────────────────────────────────────────
 
   api-gateway:
-    build: {context: services/api-gateway, dockerfile: Dockerfile}
+    build:
+      <<: *build-defaults
+      dockerfile: services/api-gateway/Dockerfile
     environment:
       AUTH_SERVICE_URL:          "http://auth-service:8001"
       INVENTORY_SERVICE_URL:     "http://inventory-service:8002"
@@ -129,7 +223,15 @@ services:
       REPORTING_SERVICE_URL:     "http://reporting-service:8005"
       AI_SERVICE_URL:            "http://ai-insights-service:8006"
       NOTIFICATION_SERVICE_URL:  "http://notification-service:8007"
+      RATE_LIMIT:                "${RATE_LIMIT:-100}"
+      RATE_WINDOW:               "${RATE_WINDOW:-60}"
+      REDIS_HOST:                redis
+      REDIS_PORT:                "6379"
+      ALLOWED_ORIGINS:           "${ALLOWED_ORIGINS:-http://localhost:3000}"
+      SENTRY_DSN:                "${SENTRY_DSN:-}"
+      ENVIRONMENT:               "${ENVIRONMENT:-development}"
     ports: ["8000:8000"]
+    networks: [medaxis-net]
     depends_on:
       - auth-service
       - inventory-service
@@ -138,7 +240,23 @@ services:
       - reporting-service
       - ai-insights-service
       - notification-service
-    restart: on-failure
+      - redis
+    restart: unless-stopped
+
+  # ── Frontend ─────────────────────────────────────────────────────────────────
+
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+      args:
+        REACT_APP_API_URL: "${REACT_APP_API_URL:-http://localhost:8000}"
+    ports: ["3000:3000"]
+    networks: [medaxis-net]
+    depends_on:
+      - api-gateway
+    restart: unless-stopped
 
 volumes:
   postgres_data:
+    driver: local

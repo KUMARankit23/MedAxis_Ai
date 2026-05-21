@@ -1,6 +1,7 @@
 """Auth Service — business logic layer (separated from routes)."""
 import json
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 import bcrypt
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +10,27 @@ from app.models import User, AuditLog, RoleEnum
 from app.schemas import CreateUserRequest
 from app.jwt_handler import create_access_token, create_refresh_token, decode_token
 from app.config import ACCESS_TOKEN_MINUTES, REFRESH_TOKEN_HOURS
+
+LOCKOUT_MAX_ATTEMPTS = 5
+LOCKOUT_DURATION_MINUTES = 15
+
+PASSWORD_POLICY_RE = re.compile(
+    r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};\':"\\|,.<>\/?]).{8,}$'
+)
+
+
+def validate_password_policy(password: str) -> None:
+    """Raise ValueError if password does not meet policy requirements."""
+    if len(password) < 8:
+        raise ValueError("Password must be at least 8 characters long")
+    if not re.search(r'[A-Z]', password):
+        raise ValueError("Password must contain at least one uppercase letter")
+    if not re.search(r'[a-z]', password):
+        raise ValueError("Password must contain at least one lowercase letter")
+    if not re.search(r'\d', password):
+        raise ValueError("Password must contain at least one digit")
+    if not re.search(r'[!@#$%^&*()\-_=+\[\]{};:\'",.<>/?\\|`~]', password):
+        raise ValueError("Password must contain at least one special character")
 
 
 def hash_password(plain: str) -> str:
@@ -24,6 +46,12 @@ async def _write_audit(
     resource: str = None, before: dict = None,
     after: dict = None, status: str = "SUCCESS", ip: str = None
 ):
+    import uuid
+    if isinstance(user_id, str):
+        try:
+            user_id = uuid.UUID(user_id)
+        except ValueError:
+            pass
     log = AuditLog(
         user_id=user_id, action=action, resource=resource,
         before_state=json.dumps(before) if before else None,
@@ -40,6 +68,10 @@ async def login(db: AsyncSession, username: str, password: str, ip: str):
 
     if not user or not verify_password(password, user.password_hash):
         if user:
+            user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+            if user.failed_login_attempts >= LOCKOUT_MAX_ATTEMPTS:
+                user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
+            await db.commit()
             await _write_audit(db, user.id, "LOGIN", status="FAILURE", ip=ip)
         raise ValueError("Invalid credentials")
 
@@ -48,7 +80,16 @@ async def login(db: AsyncSession, username: str, password: str, ip: str):
                            after={"reason": "account_disabled"})
         raise PermissionError("Account disabled")
 
-    user.last_login = datetime.now(timezone.utc)
+    # Check lockout
+    now = datetime.now(timezone.utc)
+    if user.locked_until and now < user.locked_until:
+        remaining = int((user.locked_until - now).total_seconds() / 60) + 1
+        raise PermissionError(f"Account locked. Try again in {remaining} minute(s).")
+
+    # Successful login — reset lockout counters
+    user.failed_login_attempts = 0
+    user.locked_until = None
+    user.last_login = now
     await db.commit()
 
     access  = create_access_token(str(user.id), user.username, user.role.value, user.outlet_id)
@@ -61,6 +102,7 @@ async def login(db: AsyncSession, username: str, password: str, ip: str):
 
 async def refresh(db: AsyncSession, refresh_token: str):
     import jwt as pyjwt
+    import uuid
     try:
         payload = decode_token(refresh_token)
     except pyjwt.ExpiredSignatureError:
@@ -71,7 +113,14 @@ async def refresh(db: AsyncSession, refresh_token: str):
     if payload.get("type") != "refresh":
         raise ValueError("Not a refresh token")
 
-    result = await db.execute(select(User).where(User.id == payload["sub"]))
+    user_id = payload["sub"]
+    if isinstance(user_id, str):
+        try:
+            user_id = uuid.UUID(user_id)
+        except ValueError:
+            pass
+
+    result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise ValueError("User not found or disabled")
@@ -88,6 +137,9 @@ async def create_user(db: AsyncSession, data: CreateUserRequest, actor_id: str, 
     if result.scalar_one_or_none():
         raise ValueError("Username or email already exists")
 
+    # Password policy validation
+    validate_password_policy(data.password)
+
     user = User(
         username=data.username, email=data.email,
         password_hash=hash_password(data.password),
@@ -103,6 +155,12 @@ async def create_user(db: AsyncSession, data: CreateUserRequest, actor_id: str, 
 
 
 async def deactivate_user(db: AsyncSession, user_id: str, actor_id: str):
+    import uuid
+    if isinstance(user_id, str):
+        try:
+            user_id = uuid.UUID(user_id)
+        except ValueError:
+            pass
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
@@ -112,7 +170,7 @@ async def deactivate_user(db: AsyncSession, user_id: str, actor_id: str):
     user.is_active = False
     await db.commit()
 
-    await _write_audit(db, actor_id, "USER_DEACTIVATE", user_id,
+    await _write_audit(db, actor_id, "USER_DEACTIVATE", str(user.id),
                        before=before, after={"is_active": False})
     return user
 
@@ -127,3 +185,24 @@ async def seed_admin(db: AsyncSession):
         )
         db.add(admin)
         await db.commit()
+
+
+async def unlock_user(db: AsyncSession, user_id: str, actor_id: str):
+    import uuid
+    if isinstance(user_id, str):
+        try:
+            user_id = uuid.UUID(user_id)
+        except ValueError:
+            pass
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise LookupError("User not found")
+
+    user.failed_login_attempts = 0
+    user.locked_until = None
+    await db.commit()
+
+    await _write_audit(db, actor_id, "USER_UNLOCK", str(user.id),
+                       after={"unlocked_by": actor_id})
+    return user

@@ -1,108 +1,168 @@
 import React, { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import {
+  LayoutDashboard, Package, Receipt, RefreshCw, Brain,
+  BarChart2, Shield, LogOut, ChevronLeft, ChevronRight,
+  MapPin,
+} from 'lucide-react';
 
 const NAV = [
-  { path: '/',               label: 'Dashboard',      icon: '📊', roles: ['admin','supervisor'] },
-  { path: '/inventory',      label: 'Inventory',       icon: '💊', roles: ['admin','supervisor','pharmacist'] },
-  { path: '/billing',        label: 'Billing',         icon: '🧾', roles: ['admin','supervisor','pharmacist'] },
-  { path: '/replenishment',  label: 'Replenishment',   icon: '🔄', roles: ['admin','supervisor'] },
-  { path: '/ai',             label: 'AI Insights',     icon: '🤖', roles: ['admin','supervisor'] },
-  { path: '/reports',        label: 'Reports',         icon: '📈', roles: ['admin','supervisor'] },
-  { path: '/audit',          label: 'Audit Logs',      icon: '🔒', roles: ['admin'] },
+  { path: '/',              label: 'Dashboard',     Icon: LayoutDashboard, roles: ['admin', 'supervisor'] },
+  { path: '/inventory',     label: 'Inventory',     Icon: Package,         roles: ['admin', 'supervisor', 'pharmacist', 'inventory_planner'] },
+  { path: '/billing',       label: 'Billing',       Icon: Receipt,         roles: ['admin', 'supervisor', 'pharmacist'] },
+  { path: '/replenishment', label: 'Replenishment', Icon: RefreshCw,       roles: ['admin', 'supervisor', 'inventory_planner'] },
+  { path: '/ai',            label: 'AI Insights',   Icon: Brain,           roles: ['admin', 'supervisor'] },
+  { path: '/reports',       label: 'Reports',       Icon: BarChart2,       roles: ['admin', 'supervisor'] },
+  { path: '/audit',         label: 'Audit Logs',    Icon: Shield,          roles: ['admin'] },
 ];
 
-const ROLE_COLOR = { admin: '#e74c3c', supervisor: '#f39c12', pharmacist: '#27ae60' };
+const ROLE_COLORS = {
+  admin:             { bg: '#FEE2E2', color: '#991B1B' },
+  supervisor:        { bg: '#FEF3C7', color: '#92400E' },
+  pharmacist:        { bg: '#D1FAE5', color: '#065F46' },
+  inventory_planner: { bg: '#DBEAFE', color: '#1E40AF' },
+};
+
+function initials(name = '') {
+  return name.slice(0, 2).toUpperCase() || 'U';
+}
 
 export default function Layout({ children }) {
   const { user, logout } = useAuth();
-  const location = useLocation();
-  const navigate = useNavigate();
+  const location  = useLocation();
+  const navigate  = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
 
   const allowed = NAV.filter(n => n.roles.includes(user?.role));
+  const currentPage = allowed.find(n => n.path === location.pathname);
+  const roleColor = ROLE_COLORS[user?.role] || { bg: '#F1F5F9', color: '#475569' };
 
-  const handleLogout = () => { logout(); navigate('/login'); };
+  const handleLogout = async () => {
+    await logout();
+    navigate('/login', { replace: true });
+  };
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh', background: '#f0f4f8' }}>
-      {/* Sidebar */}
-      <aside style={{
-        width: collapsed ? 60 : 220, background: '#1a2332', color: '#fff',
-        display: 'flex', flexDirection: 'column', transition: 'width 0.2s',
-        flexShrink: 0
-      }}>
+    <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-base)' }}>
+
+      {/* ── Sidebar ── */}
+      <aside
+        className="sidebar"
+        style={{
+          width: collapsed ? 62 : 240,
+          display: 'flex', flexDirection: 'column',
+          transition: 'width 0.22s cubic-bezier(0.4,0,0.2,1)',
+          flexShrink: 0, position: 'sticky', top: 0, height: '100vh',
+          overflow: 'hidden',
+        }}
+      >
         {/* Logo */}
-        <div style={{ padding: '20px 16px', borderBottom: '1px solid #2d3f55', display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 24 }}>💊</span>
-          {!collapsed && <span style={{ fontWeight: 700, fontSize: 16, color: '#4fc3f7' }}>MedAxis</span>}
+        <div className="sidebar-logo-wrap" style={{ overflow: 'hidden' }}>
+          <div className="sidebar-logo-mark">M</div>
+          {!collapsed && (
+            <div style={{ overflow: 'hidden' }}>
+              <div className="sidebar-logo-text">MedAxis</div>
+              <div className="sidebar-logo-sub">Platform</div>
+            </div>
+          )}
         </div>
 
         {/* Nav */}
-        <nav style={{ flex: 1, padding: '12px 0' }}>
-          {allowed.map(item => {
-            const active = location.pathname === item.path;
+        <nav className="sidebar-nav">
+          {allowed.map(({ path, label, Icon }) => {
+            const active = location.pathname === path;
             return (
-              <Link key={item.path} to={item.path} style={{
-                display: 'flex', alignItems: 'center', gap: 12,
-                padding: '10px 16px', textDecoration: 'none',
-                color: active ? '#4fc3f7' : '#b0bec5',
-                background: active ? '#2d3f55' : 'transparent',
-                borderLeft: active ? '3px solid #4fc3f7' : '3px solid transparent',
-                fontSize: 14, transition: 'all 0.15s'
-              }}>
-                <span style={{ fontSize: 18 }}>{item.icon}</span>
-                {!collapsed && item.label}
+              <Link
+                key={path}
+                to={path}
+                title={collapsed ? label : undefined}
+                className={`nav-item ${active ? 'active' : ''}`}
+              >
+                <Icon size={17} className="nav-icon" />
+                {!collapsed && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>}
               </Link>
             );
           })}
         </nav>
 
-        {/* User info */}
-        <div style={{ padding: '12px 16px', borderTop: '1px solid #2d3f55' }}>
-          {!collapsed && (
-            <div style={{ marginBottom: 8 }}>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>{user?.username}</div>
-              <span style={{
-                fontSize: 11, padding: '2px 8px', borderRadius: 10,
-                background: ROLE_COLOR[user?.role] || '#555', color: '#fff'
-              }}>{user?.role}</span>
+        {/* User + logout */}
+        <div className="sidebar-footer">
+          {!collapsed ? (
+            <div style={{ marginBottom: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div className="user-avatar" style={{ flexShrink: 0 }}>{initials(user?.username)}</div>
+              <div style={{ overflow: 'hidden', flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#F1F5F9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {user?.username}
+                </div>
+                <div style={{ marginTop: 3 }}>
+                  <span className="role-badge" style={{ background: roleColor.bg, color: roleColor.color, fontSize: 9 }}>
+                    {user?.role?.replace('_', ' ')}
+                  </span>
+                </div>
+                {user?.outlet_id && (
+                  <div style={{ fontSize: 10, color: 'var(--slate-500)', marginTop: 3, display: 'flex', alignItems: 'center', gap: 3 }}>
+                    <MapPin size={9} /> {user.outlet_id}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 8 }}>
+              <div className="user-avatar">{initials(user?.username)}</div>
             </div>
           )}
-          <button onClick={handleLogout} style={{
-            width: '100%', padding: '6px', background: '#e74c3c',
-            color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12
-          }}>
-            {collapsed ? '↩' : 'Logout'}
+          <button
+            onClick={handleLogout}
+            title={collapsed ? 'Logout' : undefined}
+            style={{
+              width: '100%', padding: collapsed ? '8px' : '8px 12px',
+              background: 'rgba(239,68,68,0.1)', color: '#F87171',
+              border: '1px solid rgba(239,68,68,0.2)', borderRadius: 'var(--r-sm)',
+              cursor: 'pointer', fontSize: 12, fontWeight: 600,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+              transition: 'all var(--t-fast)',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.18)'; e.currentTarget.style.color = '#FCA5A5'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'rgba(239,68,68,0.1)';  e.currentTarget.style.color = '#F87171'; }}
+          >
+            <LogOut size={13} />
+            {!collapsed && 'Logout'}
           </button>
         </div>
 
         {/* Collapse toggle */}
-        <button onClick={() => setCollapsed(!collapsed)} style={{
-          background: '#2d3f55', border: 'none', color: '#fff',
-          padding: '8px', cursor: 'pointer', fontSize: 16
-        }}>
-          {collapsed ? '→' : '←'}
+        <button className="sidebar-collapse-btn" onClick={() => setCollapsed(c => !c)}>
+          {collapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
         </button>
       </aside>
 
-      {/* Main content */}
-      <main style={{ flex: 1, overflow: 'auto' }}>
-        {/* Top bar */}
-        <div style={{
-          background: '#fff', padding: '12px 24px', borderBottom: '1px solid #e0e0e0',
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-          boxShadow: '0 1px 4px rgba(0,0,0,0.08)'
-        }}>
-          <h2 style={{ fontSize: 18, color: '#1a2332', fontWeight: 600 }}>
-            {allowed.find(n => n.path === location.pathname)?.label || 'MedAxis Platform'}
-          </h2>
-          <div style={{ fontSize: 13, color: '#666' }}>
-            Store: <strong>{user?.store_id || 'All Stores'}</strong>
+      {/* ── Main ── */}
+      <main style={{ flex: 1, overflow: 'auto', minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        {/* Topbar */}
+        <div className="topbar">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {currentPage && <currentPage.Icon size={18} style={{ color: 'var(--primary)', flexShrink: 0 }} />}
+            <span className="topbar-title">{currentPage?.label || 'MedAxis'}</span>
+          </div>
+          <div className="topbar-right">
+            {user?.outlet_id && (
+              <div className="topbar-chip">
+                <MapPin size={11} style={{ color: 'var(--text-muted)' }} />
+                {user.outlet_id}
+              </div>
+            )}
+            <span className="role-badge" style={{ background: roleColor.bg, color: roleColor.color }}>
+              {user?.role?.replace('_', ' ')}
+            </span>
+            <div className="topbar-avatar">{initials(user?.username)}</div>
           </div>
         </div>
 
-        <div style={{ padding: 24 }}>{children}</div>
+        {/* Content */}
+        <div style={{ padding: 24, flex: 1 }} className="page-enter">
+          {children}
+        </div>
       </main>
     </div>
   );

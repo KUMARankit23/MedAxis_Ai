@@ -1,0 +1,11 @@
+﻿FROM postgres:15-alpine
+
+RUN apk add --no-cache bash dcron
+
+COPY scripts/backup.sh /backup.sh
+RUN chmod +x /backup.sh
+
+# Run backup daily at 02:00
+RUN echo "0 2 * * * /backup.sh >> /var/log/backup.log 2>&1" > /etc/crontabs/root
+
+CMD ["crond", "-f", "-l", "2"]

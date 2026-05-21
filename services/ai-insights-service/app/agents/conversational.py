@@ -43,7 +43,7 @@ Rules:
 # Pattern-based fallback query templates
 QUERY_PATTERNS = [
     {
-        "patterns": [r"top.*medicines?.*sold", r"best.*selling", r"most.*sold"],
+        "patterns": [r"top.*selling", r"top.*medicines?", r"best.*selling", r"most.*sold"],
         "sql": """
             SELECT medicine_name, SUM(quantity) as total_sold
             FROM invoice_items
@@ -142,9 +142,9 @@ def _openai_query(query: str) -> Dict:
     """Use OpenAI to generate SQL from natural language."""
     try:
         import openai
-        from shared.config import OPENAI_API_KEY
+        from app.config import OPENAI_API_KEY
         if not OPENAI_API_KEY:
-            raise ValueError("No OpenAI API key")
+            raise ValueError("No OpenAI API key configured")
 
         client = openai.OpenAI(api_key=OPENAI_API_KEY)
         response = client.chat.completions.create(

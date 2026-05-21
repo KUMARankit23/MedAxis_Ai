@@ -35,8 +35,7 @@ class UserResponse(BaseModel):
     outlet_id: Optional[str]
     is_active: bool
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
 
 
 class TokenResponse(BaseModel):
@@ -59,5 +58,5 @@ class AuditLogResponse(BaseModel):
     status:       str
     timestamp:    datetime
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
+

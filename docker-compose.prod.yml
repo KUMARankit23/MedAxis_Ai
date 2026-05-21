@@ -1,0 +1,392 @@
+# MedAxis Platform — PRODUCTION Docker Compose
+# Usage: docker compose -f docker-compose.prod.yml up -d --build
+#
+# Prerequisites:
+#   1. Copy .env.example to .env and fill in all values
+#   2. Generate TLS certs: bash nginx/generate-self-signed-cert.sh
+#      (or place real certs in nginx/certs/)
+#   3. Set REACT_APP_API_URL to your public HTTPS domain
+
+x-common-env: &common-env
+  DB_HOST:         postgres
+  DB_PORT:         "5432"
+  DB_USER:         "${DB_USER:-postgres}"
+  DB_PASSWORD:     "${DB_PASSWORD}"
+  REDIS_HOST:      redis
+  REDIS_PORT:      "6379"
+  REDIS_URL:       "redis://:${DB_PASSWORD}@redis:6379"
+  REDIS_PASSWORD:  "${DB_PASSWORD}"
+  JWT_SECRET:      "${JWT_SECRET}"
+  LOG_LEVEL:       "${LOG_LEVEL:-INFO}"
+  ALLOWED_ORIGINS: "${ALLOWED_ORIGINS}"
+  SENTRY_DSN:      "${SENTRY_DSN:-}"
+  ENVIRONMENT:     "production"
+
+x-build-defaults: &build-defaults
+  context: .
+  args:
+    BUILDKIT_INLINE_CACHE: "1"
+
+x-service-defaults: &service-defaults
+  restart: always
+  networks: [medaxis-net]
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+networks:
+  medaxis-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  backup_data:
+    driver: local
+  nginx_certs:
+    driver: local
+
+services:
+
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+
+  postgres:
+    <<: *service-defaults
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER:     "${DB_USER:-postgres}"
+      POSTGRES_PASSWORD: "${DB_PASSWORD}"
+      POSTGRES_DB:       medaxis_auth
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db/01_create_databases.sql:/docker-entrypoint-initdb.d/01_create_databases.sql
+    # No port exposure — only accessible within medaxis-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+        reservations:
+          memory: 256m
+
+  redis:
+    <<: *service-defaults
+    image: redis:7-alpine
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru --requirepass "${DB_PASSWORD}"
+    # No port exposure
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${DB_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 192m
+
+  # ── Microservices (no ports exposed — only nginx reaches them) ───────────────
+
+  auth-service:
+    <<: *service-defaults
+    build:
+      <<: *build-defaults
+      dockerfile: services/auth-service/Dockerfile
+    environment:
+      <<: *common-env
+      DATABASE_URL: "postgresql://postgres:${DB_PASSWORD}@postgres:5432/medaxis_auth"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis:    {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  inventory-service:
+    <<: *service-defaults
+    build:
+      <<: *build-defaults
+      dockerfile: services/inventory-service/Dockerfile
+    environment:
+      <<: *common-env
+      DATABASE_URL: "postgresql://postgres:${DB_PASSWORD}@postgres:5432/medaxis_inventory"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis:    {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  billing-service:
+    <<: *service-defaults
+    build:
+      <<: *build-defaults
+      dockerfile: services/billing-service/Dockerfile
+    environment:
+      <<: *common-env
+      DATABASE_URL:          "postgresql://postgres:${DB_PASSWORD}@postgres:5432/medaxis_billing"
+      INVENTORY_SERVICE_URL: "http://inventory-service:8002"
+    depends_on:
+      postgres:          {condition: service_healthy}
+      inventory-service: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8003/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  replenishment-service:
+    <<: *service-defaults
+    build:
+      <<: *build-defaults
+      dockerfile: services/replenishment-service/Dockerfile
+    environment:
+      <<: *common-env
+      DATABASE_URL:          "postgresql://postgres:${DB_PASSWORD}@postgres:5432/medaxis_replenishment"
+      INVENTORY_SERVICE_URL: "http://inventory-service:8002"
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8004/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  reporting-service:
+    <<: *service-defaults
+    build:
+      <<: *build-defaults
+      dockerfile: services/reporting-service/Dockerfile
+    environment:
+      <<: *common-env
+      BILLING_DB_URL:   "postgresql://postgres:${DB_PASSWORD}@postgres:5432/medaxis_billing"
+      INVENTORY_DB_URL: "postgresql://postgres:${DB_PASSWORD}@postgres:5432/medaxis_inventory"
+      REDIS_URL:        "redis://:${DB_PASSWORD}@redis:6379"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis:    {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8005/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  ai-insights-service:
+    <<: *service-defaults
+    build:
+      <<: *build-defaults
+      dockerfile: services/ai-insights-service/Dockerfile
+    environment:
+      <<: *common-env
+      DATABASE_URL:             "postgresql://postgres:${DB_PASSWORD}@postgres:5432/medaxis_ai"
+      OPENAI_API_KEY:           "${OPENAI_API_KEY:-}"
+      GROQ_API_KEY:             "${GROQ_API_KEY:-}"
+      NOTIFICATION_SERVICE_URL: "http://notification-service:8007"
+    depends_on:
+      postgres:             {condition: service_healthy}
+      notification-service: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8006/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+    deploy:
+      resources:
+        limits:
+          memory: 512m   # higher for scikit-learn
+
+  notification-service:
+    <<: *service-defaults
+    build:
+      <<: *build-defaults
+      dockerfile: services/notification-service/Dockerfile
+    environment:
+      <<: *common-env
+      DATABASE_URL: "postgresql://postgres:${DB_PASSWORD}@postgres:5432/medaxis_notifications"
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8007/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+  api-gateway:
+    <<: *service-defaults
+    build:
+      <<: *build-defaults
+      dockerfile: services/api-gateway/Dockerfile
+    environment:
+      AUTH_SERVICE_URL:          "http://auth-service:8001"
+      INVENTORY_SERVICE_URL:     "http://inventory-service:8002"
+      BILLING_SERVICE_URL:       "http://billing-service:8003"
+      REPLENISHMENT_SERVICE_URL: "http://replenishment-service:8004"
+      REPORTING_SERVICE_URL:     "http://reporting-service:8005"
+      AI_SERVICE_URL:            "http://ai-insights-service:8006"
+      NOTIFICATION_SERVICE_URL:  "http://notification-service:8007"
+      RATE_LIMIT:                "${RATE_LIMIT:-100}"
+      RATE_WINDOW:               "${RATE_WINDOW:-60}"
+      REDIS_HOST:                redis
+      REDIS_PORT:                "6379"
+      REDIS_PASSWORD:            "${DB_PASSWORD}"
+      ALLOWED_ORIGINS:           "${ALLOWED_ORIGINS}"
+      SENTRY_DSN:                "${SENTRY_DSN:-}"
+      ENVIRONMENT:               "production"
+      JWT_SECRET:                "${JWT_SECRET}"
+    depends_on:
+      - auth-service
+      - inventory-service
+      - billing-service
+      - replenishment-service
+      - reporting-service
+      - ai-insights-service
+      - notification-service
+      - redis
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  # ── Nginx reverse proxy (only public-facing ports) ────────────────────────────
+
+  nginx:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api-gateway
+      - frontend
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+
+  # ── Frontend ──────────────────────────────────────────────────────────────────
+
+  frontend:
+    <<: *service-defaults
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+      args:
+        REACT_APP_API_URL:     "${REACT_APP_API_URL}"
+        REACT_APP_SENTRY_DSN:  "${REACT_APP_SENTRY_DSN:-}"
+        REACT_APP_ENVIRONMENT: "production"
+    # No direct port — served through nginx
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+
+  # ── Database backup (daily cron) ──────────────────────────────────────────────
+
+  db-backup:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: scripts/Dockerfile.backup
+    environment:
+      DB_HOST:             postgres
+      DB_USER:             "${DB_USER:-postgres}"
+      DB_PASSWORD:         "${DB_PASSWORD}"
+      BACKUP_RETAIN_DAYS:  "${BACKUP_RETAIN_DAYS:-7}"
+    volumes:
+      - backup_data:/backups
+    depends_on:
+      postgres: {condition: service_healthy}
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+
+  # ── pgAdmin (database management UI) ─────────────────────────────────────────
+
+  pgadmin:
+    <<: *service-defaults
+    image: dpage/pgadmin4:8
+    environment:
+      PGADMIN_DEFAULT_EMAIL:    "${PGADMIN_EMAIL:-admin@medaxis.com}"
+      PGADMIN_DEFAULT_PASSWORD: "${PGADMIN_PASSWORD}"
+      PGADMIN_CONFIG_SERVER_MODE: "True"
+    ports:
+      - "127.0.0.1:5050:80"   # Localhost only — do not expose publicly
+    volumes:
+      - ./scripts/pgadmin-servers.json:/pgadmin4/servers.json:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  # ── Prometheus metrics ────────────────────────────────────────────────────────
+
+  prometheus:
+    <<: *service-defaults
+    image: prom/prometheus:v2.51.0
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"   # Localhost only — do not expose publicly
+    deploy:
+      resources:
+        limits:
+          memory: 256m

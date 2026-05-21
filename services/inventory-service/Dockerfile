@@ -1,7 +1,10 @@
 FROM python:3.12-slim
 WORKDIR /app
-COPY requirements.txt .
+COPY services/inventory-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY app/ ./app/
+COPY services/inventory-service/app/ ./app/
+COPY services/inventory-service/alembic/ ./alembic/
+COPY services/inventory-service/alembic.ini ./alembic.ini
+COPY shared/ /shared/
 EXPOSE 8002
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8002"]

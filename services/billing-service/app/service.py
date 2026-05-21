@@ -7,16 +7,51 @@ from app.models import Invoice, InvoiceItem, Prescription, InvoiceStatus, Paymen
 from app.schemas import InvoiceCreate, PrescriptionCreate
 from app.config import INVENTORY_URL
 
+# ── Prometheus custom counters ────────────────────────────────────────────────
+try:
+    from prometheus_client import Counter, REGISTRY
+
+    def _counter(name, doc):
+        # Avoid duplicate registration when module is reloaded in tests
+        try:
+            return Counter(name, doc)
+        except ValueError:
+            return REGISTRY._names_to_collectors.get(name + "_total") or Counter.__new__(Counter)
+
+    INVOICES_CREATED   = _counter("medaxis_invoices_created",   "Total invoices created (draft)")
+    INVOICES_CONFIRMED = _counter("medaxis_invoices_confirmed", "Total invoices confirmed")
+    INVOICES_REFUNDED  = _counter("medaxis_invoices_refunded",  "Total invoices refunded")
+except ImportError:
+    class _Noop:
+        def inc(self, *a, **kw): pass
+    INVOICES_CREATED = INVOICES_CONFIRMED = INVOICES_REFUNDED = _Noop()
+
 GST_SLABS = {"OTC": 0.05, "PRESCRIPTION": 0.05, "CONTROLLED": 0.05,
              "SUPPLEMENT": 0.12, "EQUIPMENT": 0.12}
 
 async def _next_invoice_number(db: AsyncSession) -> str:
+    """
+    Generate a unique invoice number using a PostgreSQL sequence to avoid
+    race conditions under concurrent requests, with an SQLite fallback for tests.
+    """
+    from sqlalchemy import text, func
     today = datetime.now(timezone.utc).strftime("%Y%m%d")
-    result = await db.execute(select(Invoice).where(Invoice.invoice_number.like(f"INV-{today}-%")))
-    count = len(result.scalars().all())
-    return f"INV-{today}-{count + 1:04d}"
+    
+    if db.bind and db.bind.dialect.name == "sqlite":
+        result = await db.execute(select(func.count(Invoice.id)))
+        count = (result.scalar() or 0) + 1
+        return f"INV-{today}-{count:06d}"
+
+    # Create sequence on first use (idempotent)
+    await db.execute(text(
+        "CREATE SEQUENCE IF NOT EXISTS invoice_seq START 1 INCREMENT 1"
+    ))
+    result = await db.execute(text("SELECT nextval('invoice_seq')"))
+    seq = result.scalar()
+    return f"INV-{today}-{seq:06d}"
 
 async def create_invoice(db: AsyncSession, data: InvoiceCreate, pharmacist_id: str) -> Invoice:
+    from sqlalchemy.orm import selectinload
     invoice = Invoice(
         invoice_number=await _next_invoice_number(db),
         outlet_id=data.outlet_id, prescription_id=data.prescription_id,
@@ -45,11 +80,25 @@ async def create_invoice(db: AsyncSession, data: InvoiceCreate, pharmacist_id: s
     invoice.tax = round(total_tax, 2)
     invoice.total = round(subtotal - data.discount + total_tax, 2)
     await db.commit()
-    await db.refresh(invoice)
-    return invoice
+
+    # Re-fetch with items eagerly loaded to avoid MissingGreenlet on serialization
+    result = await db.execute(
+        select(Invoice).options(selectinload(Invoice.items)).where(Invoice.id == invoice.id)
+    )
+    INVOICES_CREATED.inc()
+    return result.scalar_one()
 
 async def confirm_invoice(db: AsyncSession, invoice_id, token: str) -> Invoice:
-    result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
+    from sqlalchemy.orm import selectinload
+    import uuid
+    if isinstance(invoice_id, str):
+        try:
+            invoice_id = uuid.UUID(invoice_id)
+        except ValueError:
+            pass
+    result = await db.execute(
+        select(Invoice).options(selectinload(Invoice.items)).where(Invoice.id == invoice_id)
+    )
     invoice = result.scalar_one_or_none()
     if not invoice: raise LookupError("Invoice not found")
     if invoice.status != InvoiceStatus.draft:
@@ -69,10 +118,68 @@ async def confirm_invoice(db: AsyncSession, invoice_id, token: str) -> Invoice:
     invoice.status = InvoiceStatus.confirmed
     invoice.confirmed_at = datetime.now(timezone.utc)
     await db.commit()
-    await db.refresh(invoice)
-    return invoice
+
+    result = await db.execute(
+        select(Invoice).options(selectinload(Invoice.items)).where(Invoice.id == invoice.id)
+    )
+    INVOICES_CONFIRMED.inc()
+    return result.scalar_one()
 
 async def create_prescription(db: AsyncSession, data: PrescriptionCreate, user_id: str) -> Prescription:
     rx = Prescription(**data.model_dump(), created_by=user_id)
     db.add(rx); await db.commit(); await db.refresh(rx)
     return rx
+
+
+async def refund_invoice(db: AsyncSession, invoice_id: str, token: str) -> Invoice:
+    """Refund a confirmed invoice and restore stock via inventory service."""
+    import logging
+    from sqlalchemy.orm import selectinload
+    from datetime import date, timedelta
+    import uuid
+    if isinstance(invoice_id, str):
+        try:
+            invoice_id = uuid.UUID(invoice_id)
+        except ValueError:
+            pass
+
+    logger = logging.getLogger(__name__)
+
+    result = await db.execute(
+        select(Invoice).options(selectinload(Invoice.items)).where(Invoice.id == invoice_id)
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise LookupError("Invoice not found")
+    if invoice.status != InvoiceStatus.confirmed:
+        raise ValueError(f"Only CONFIRMED invoices can be refunded (current: {invoice.status.value})")
+
+    # Restore stock by creating a new batch for each returned line item.
+    # We use /inventory/batches (receive) rather than /inventory/adjust because
+    # we don't have a specific batch_id to adjust against at refund time.
+    async with httpx.AsyncClient() as client:
+        for item in invoice.items:
+            resp = await client.post(
+                f"{INVENTORY_URL}/inventory/batches",
+                json={
+                    "medicine_id": item.medicine_id,
+                    "batch_number": f"REFUND-{invoice.invoice_number}-{str(item.id)[:6].upper()}",
+                    "outlet_id": invoice.outlet_id,
+                    "quantity": item.quantity,
+                    # Returned stock gets a 1-year expiry as a safe default
+                    "expiry_date": (date.today() + timedelta(days=365)).isoformat(),
+                },
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10,
+            )
+            # Non-fatal: log but don't block the refund if stock restore fails
+            if resp.status_code not in (200, 201):
+                logger.warning(
+                    f"Stock restore failed for {item.medicine_id}: {resp.text}"
+                )
+
+    invoice.status = InvoiceStatus.refunded
+    await db.commit()
+    await db.refresh(invoice)
+    INVOICES_REFUNDED.inc()
+    return invoice

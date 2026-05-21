@@ -2,7 +2,7 @@
 import uuid
 import enum
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Boolean, DateTime, Text, ForeignKey, Enum
+from sqlalchemy import Column, String, Boolean, DateTime, Text, ForeignKey, Enum, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -24,9 +24,11 @@ class User(Base):
     password_hash = Column(String(256), nullable=False)
     role          = Column(Enum(RoleEnum), nullable=False, default=RoleEnum.pharmacist)
     outlet_id     = Column(String(50), nullable=True)
-    is_active     = Column(Boolean, default=True)
-    created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    last_login    = Column(DateTime(timezone=True), nullable=True)
+    is_active              = Column(Boolean, default=True)
+    created_at             = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    last_login             = Column(DateTime(timezone=True), nullable=True)
+    failed_login_attempts  = Column(Integer, default=0, nullable=False)
+    locked_until           = Column(DateTime(timezone=True), nullable=True)
 
     audit_logs = relationship("AuditLog", back_populates="user", lazy="select")
 
